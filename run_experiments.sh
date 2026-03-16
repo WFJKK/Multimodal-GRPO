@@ -1,61 +1,64 @@
 #!/bin/bash
 set -e
 
-# Full experiment: SFT baseline + CoT GRPO
+# Session 3: CoT GRPO training + evaluation
+# SFT and answer-only GRPO already completed in previous sessions.
 # Budget: 6 hours on A100 80GB
 #
 # Run inside tmux:
-#   tmux new -s exp2
 #   bash run_experiments.sh
 
-echo "=== Experiment Session 2 ==="
+echo "=== Experiment Session 3: CoT GRPO ==="
 echo "Start time: $(date)"
 echo ""
 
-# ---- 1. SFT Baseline (expect ~30 min) ----
+# ---- Deps that may be missing on fresh instance ----
+pip install --break-system-packages -q qwen-vl-utils 2>/dev/null || true
+
+# ---- Generate dataset if needed ----
+if [ ! -d "dataset/train" ]; then
+    echo "Generating dataset..."
+    python3 generate_dataset.py --n-train 1000 --n-test 200 --seed 42 --output-dir dataset
+fi
+
+# ---- CoT GRPO Training ----
 echo "=========================================="
-echo "  Phase 1: SFT Baseline Training"
+echo "  CoT GRPO Training"
 echo "=========================================="
-python3 train_sft.py
+python3 train_grpo_cot.py --resume
 echo ""
 
-echo "  Phase 1b: SFT Evaluation"
-python3 evaluate.py --checkpoint-dir checkpoints_sft/final --tag sft
-echo ""
-
-# Save SFT results immediately
-# Save SFT results immediately
-git add results/
-git add -f checkpoints_sft/training_log.jsonl 2>/dev/null || true
-git commit -m "SFT baseline results" 2>/dev/null || true
-git push 2>/dev/null || true
-echo "SFT results pushed to GitHub"
-echo ""
-
-# ---- 2. CoT GRPO (expect ~3.5 hrs) ----
+# ---- Evaluate whatever checkpoint exists ----
 echo "=========================================="
-echo "  Phase 2: CoT GRPO Training"
+echo "  CoT GRPO Evaluation"
 echo "=========================================="
-python3 train_grpo_cot.py
+if [ -d "checkpoints_cot/final" ]; then
+    python3 evaluate.py --checkpoint-dir checkpoints_cot/final --tag grpo_cot
+else
+    # Find latest checkpoint
+    LATEST=$(ls -d checkpoints_cot/checkpoint-* 2>/dev/null | sort -t- -k2 -n | tail -1)
+    if [ -n "$LATEST" ]; then
+        echo "No final checkpoint, using $LATEST"
+        python3 evaluate.py --checkpoint-dir "$LATEST" --tag grpo_cot_partial
+    else
+        echo "No checkpoints found!"
+    fi
+fi
 echo ""
 
-echo "  Phase 2b: CoT GRPO Evaluation"
-python3 evaluate.py --checkpoint-dir checkpoints_cot/final --tag grpo_cot
-echo ""
-
-# ---- 3. Final comparison ----
+# ---- Comparison ----
 echo "=========================================="
 echo "  Final Comparison"
 echo "=========================================="
 python3 evaluate.py --compare
 echo ""
 
-# ---- 4. Push everything ----
+# ---- Push results ----
 git add results/
-git add -f checkpoints_sft/training_log.jsonl checkpoints_cot/training_log.jsonl 2>/dev/null || true
-git commit -m "SFT + CoT GRPO experiment results" 2>/dev/null || true
+git add -f checkpoints_cot/training_log.jsonl 2>/dev/null || true
+git commit -m "CoT GRPO results" 2>/dev/null || true
 git push 2>/dev/null || true
 
 echo ""
-echo "=== All experiments complete ==="
+echo "=== Complete ==="
 echo "End time: $(date)"

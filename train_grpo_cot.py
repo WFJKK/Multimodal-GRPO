@@ -1,21 +1,17 @@
 """GRPO with chain-of-thought for spatial measurement.
 
-Same as answer-only GRPO but the model can generate up to 256 tokens.
+Same as answer-only GRPO but the model can generate reasoning tokens.
 Reward is ONLY based on the final number — the reasoning is unconstrained.
 
-The hypothesis: the model will discover its own spatial reasoning strategy
-in the scratchpad (referencing the scale bar, estimating proportions, etc.)
-and this will lead to better accuracy than answer-only GRPO.
-
-If the model develops scale bar reasoning language ON ITS OWN — without
-being taught it — that's a DeepSeek-R1-style emergent reasoning finding.
+Memory-safe: processes one completion at a time through backward pass,
+clears cache between completions to avoid OOM on 80GB A100.
 
 Usage:
     python3 train_grpo_cot.py
     python3 train_grpo_cot.py --resume
 """
 
-import json, os, re, time
+import json, os, re, time, gc
 from pathlib import Path
 
 import numpy as np
@@ -31,7 +27,7 @@ OUTPUT_DIR = "checkpoints_cot"
 LORA_RANK = 64
 LORA_ALPHA = 128
 NUM_GENERATIONS = 4
-MAX_NEW_TOKENS = 256        # Room for reasoning
+MAX_NEW_TOKENS = 128        # Enough for brief reasoning + answer
 LEARNING_RATE = 5e-6
 NUM_EPOCHS = 1
 SAVE_EVERY = 100
@@ -50,17 +46,12 @@ USER_PROMPT = "What is the diameter of hole H1 in mm?"
 def parse_answer(text):
     """Extract the final ANSWER: <number> from CoT output."""
     text = text.strip()
-
-    # Try ANSWER: pattern first
     match = re.search(r'ANSWER:\s*(\d+\.?\d*)', text, re.IGNORECASE)
     if match:
         return float(match.group(1))
-
-    # Fallback: last number in the text
     numbers = re.findall(r'(\d+\.?\d*)', text)
     if numbers:
         return float(numbers[-1])
-
     return None
 
 
@@ -77,8 +68,14 @@ def load_dataset(split="train"):
         return [json.loads(l) for l in f]
 
 
-def grpo_loss(model, processor, image_path, gt_mm):
-    """Compute GRPO loss for one sample with CoT."""
+def grpo_step(model, processor, optimizer, image_path, gt_mm):
+    """One GRPO step: generate, score, update. Memory-safe.
+
+    Key difference from naive implementation: we process each completion
+    through its own forward+backward pass, accumulating gradients in the
+    optimizer, rather than building one big loss tensor. This keeps peak
+    memory proportional to ONE completion, not N.
+    """
     image = Image.open(image_path).convert("RGB")
     messages = [{"role": "user", "content": [
         {"type": "image", "image": image},
@@ -89,7 +86,7 @@ def grpo_loss(model, processor, image_path, gt_mm):
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
     input_len = inputs["input_ids"].shape[1]
 
-    # Step 1: Generate N completions (no grad)
+    # Step 1: Generate N completions (no grad, eval mode)
     completions = []
     gen_ids_list = []
 
@@ -103,33 +100,61 @@ def grpo_loss(model, processor, image_path, gt_mm):
                 temperature=0.7,
                 top_p=0.9,
             )
-        gen_ids = outputs[0, input_len:]
+        gen_ids = outputs[0, input_len:].clone()
         gen_ids_list.append(gen_ids)
         completions.append(processor.decode(gen_ids, skip_special_tokens=True).strip())
+        del outputs
+    torch.cuda.empty_cache()
 
-    # Step 2: Compute rewards and advantages (reward ONLY on final answer)
+    # Step 2: Compute rewards and advantages
     rewards = [compute_reward(c, gt_mm) for c in completions]
     mean_r = np.mean(rewards)
     std_r = np.std(rewards) + 1e-8
     advantages = [(r - mean_r) / std_r for r in rewards]
 
-    # Step 3: Policy gradient loss
+    # Step 3: Accumulate gradients one completion at a time
+    # This is the memory-safe part: instead of building a single loss
+    # tensor over all completions (which keeps all activations alive),
+    # we do forward+backward for each completion separately.
     model.train()
-    total_loss = torch.tensor(0.0, device=model.device)
+    optimizer.zero_grad()
 
+    total_loss_val = 0.0
     for gen_ids, advantage in zip(gen_ids_list, advantages):
+        # Truncate if generation was very long (extra safety)
+        if len(gen_ids) > MAX_NEW_TOKENS:
+            gen_ids = gen_ids[:MAX_NEW_TOKENS]
+
         full_ids = torch.cat([inputs["input_ids"][0], gen_ids]).unsqueeze(0)
 
-        out = model(input_ids=full_ids, pixel_values=inputs.get("pixel_values"),
-                    image_grid_thw=inputs.get("image_grid_thw"))
+        out = model(
+            input_ids=full_ids,
+            pixel_values=inputs.get("pixel_values"),
+            image_grid_thw=inputs.get("image_grid_thw"),
+        )
         logits = out.logits[0, input_len-1:-1, :]
         log_probs = torch.log_softmax(logits, dim=-1)
         token_log_probs = log_probs[range(len(gen_ids)), gen_ids]
 
-        total_loss += -advantage * token_log_probs.sum()
+        # Scale loss by 1/N so total gradient is averaged
+        loss = -advantage * token_log_probs.sum() / NUM_GENERATIONS
+        loss.backward()
 
-    total_loss = total_loss / NUM_GENERATIONS
-    return total_loss, rewards, completions
+        total_loss_val += loss.item()
+
+        # Free memory before next completion
+        del out, logits, log_probs, token_log_probs, loss, full_ids
+        torch.cuda.empty_cache()
+
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    optimizer.step()
+
+    # Clean up
+    del inputs, gen_ids_list
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    return total_loss_val, rewards, completions
 
 
 def train(resume=False):
@@ -137,6 +162,8 @@ def train(resume=False):
 
     device = torch.device("cuda")
     print(f"GPU: {torch.cuda.get_device_name(0)}")
+    gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
+    print(f"GPU memory: {gpu_mem:.0f}GB")
 
     samples = load_dataset("train")
     print(f"Train samples: {len(samples)}")
@@ -146,6 +173,9 @@ def train(resume=False):
         MODEL_ID, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True,
     )
     processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
+
+    # Enable gradient checkpointing to reduce memory
+    model.gradient_checkpointing_enable()
 
     lora_config = LoraConfig(
         r=LORA_RANK, lora_alpha=LORA_ALPHA,
@@ -189,18 +219,21 @@ def train(resume=False):
             gt_mm = sample["diameter_mm"]
 
             try:
-                loss, rewards, completions = grpo_loss(model, processor, image_path, gt_mm)
-
-                optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-
+                loss_val, rewards, completions = grpo_step(
+                    model, processor, optimizer, image_path, gt_mm
+                )
                 running_reward.extend(rewards)
-                running_loss.append(loss.item())
+                running_loss.append(loss_val)
 
+            except torch.cuda.OutOfMemoryError:
+                print(f"  Step {global_step}: OOM, skipping (clearing cache)")
+                torch.cuda.empty_cache()
+                gc.collect()
+                optimizer.zero_grad()
+                continue
             except Exception as e:
                 print(f"  Step {global_step}: ERROR {e}")
+                torch.cuda.empty_cache()
                 continue
 
             if global_step % LOG_EVERY == 0:
@@ -208,8 +241,14 @@ def train(resume=False):
                 avg_l = np.mean(running_loss[-LOG_EVERY:])
                 best_r = max(running_reward[-LOG_EVERY*NUM_GENERATIONS:])
                 elapsed = time.time() - start_time
-                steps_per_min = global_step / (elapsed / 60)
-                eta_min = (len(samples) - global_step) / steps_per_min if steps_per_min > 0 else 0
+                actual_steps = global_step - start_step
+                steps_per_min = actual_steps / (elapsed / 60) if elapsed > 0 else 0
+                remaining = len(samples) - global_step
+                eta_min = remaining / steps_per_min if steps_per_min > 0 else 0
+
+                # GPU memory info
+                mem_used = torch.cuda.memory_allocated() / 1e9
+                mem_reserved = torch.cuda.memory_reserved() / 1e9
 
                 log_entry = {
                     "step": global_step, "epoch": epoch,
@@ -219,15 +258,16 @@ def train(resume=False):
                     "gt_mm": gt_mm,
                     "completions": completions,
                     "rewards": [round(r, 3) for r in rewards],
+                    "gpu_mem_gb": round(mem_used, 1),
                 }
                 with open(log_path, "a") as f:
                     f.write(json.dumps(log_entry) + "\n")
 
-                # Show first completion (truncated) to see reasoning
                 preview = completions[0][:80].replace('\n', ' ')
                 print(f"  Step {global_step}/{len(samples)} | "
                       f"loss={avg_l:.4f} | reward={avg_r:.3f} | "
                       f"best_r={best_r:.3f} | ETA={eta_min:.0f}m | "
+                      f"mem={mem_used:.0f}/{mem_reserved:.0f}GB | "
                       f"gt={gt_mm:.1f} | '{preview}'")
 
             if global_step % SAVE_EVERY == 0:
