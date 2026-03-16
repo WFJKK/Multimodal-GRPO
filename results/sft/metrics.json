@@ -1,0 +1,30 @@
+{
+  "test": {
+    "n_total": 200,
+    "n_parsed": 200,
+    "parse_rate": 1.0,
+    "mae_mm": 3.082,
+    "median_ae_mm": 2.51,
+    "mae_relative": 0.2079,
+    "within_1mm": 0.23,
+    "within_2mm": 0.395,
+    "within_5mm": 0.815,
+    "mae_sb5mm": 3.5,
+    "mae_sb10mm": 2.708,
+    "mae_sb15mm": 2.442,
+    "mae_sb20mm": 3.144,
+    "mae_sb25mm": 2.578,
+    "mae_sb30mm": 3.179,
+    "mae_sb40mm": 3.095,
+    "mae_sb50mm": 4.418
+  },
+  "matched_pairs": {
+    "n_pairs": 40,
+    "n_valid": 38,
+    "gt_diff_mean": 7.96,
+    "pred_diff_mean": 5.88,
+    "diff_correlation": 0.5845,
+    "frac_same_answer": 0.2105,
+    "interpretation": "USES scale bar"
+  }
+}
