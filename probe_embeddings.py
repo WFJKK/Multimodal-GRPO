@@ -210,7 +210,7 @@ def run_probes():
         elif tag == "sft":
             results_path = "results/sft/test_results.json"
         elif tag == "grpo_answer":
-            results_path = "results/ckpt_final/test_results.json"
+            results_path = "results/grpo_answer/test_results.json"
         elif tag == "sft_then_rl":
             results_path = "results/sft_then_rl/test_results.json"
 
