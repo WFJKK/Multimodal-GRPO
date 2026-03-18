@@ -1,0 +1,31 @@
+{
+  "linear_ridge": {
+    "mae": 4.31,
+    "std": 0.67
+  },
+  "mlp_64": {
+    "mae": 6.13,
+    "std": 0.67
+  },
+  "mlp_128": {
+    "mae": 6.45,
+    "std": 0.83
+  },
+  "mlp_256": {
+    "mae": 4.68,
+    "std": 0.77
+  },
+  "mlp_128x64": {
+    "mae": 5.45,
+    "std": 0.85
+  },
+  "mlp_256x128": {
+    "mae": 5.12,
+    "std": 0.82
+  },
+  "mlp_512x256": {
+    "mae": 4.91,
+    "std": 0.85
+  },
+  "interpretation": "Nonlinear probes cannot improve over linear probe (4.31mm). The 4.31->2.29mm gap requires cross-patch attention, not more probe capacity. The language model compares scale bar patches to hole patches via attention."
+}
