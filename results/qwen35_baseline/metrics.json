@@ -1,0 +1,17 @@
+{
+  "model": "Qwen/Qwen3.5-9B",
+  "n_total": 200,
+  "n_parsed": 200,
+  "parse_rate": 1.0,
+  "mae_mm": 8.621,
+  "median_ae_mm": 5.09,
+  "within_1mm": 0.09,
+  "within_2mm": 0.205,
+  "within_5mm": 0.495,
+  "matched_pair": {
+    "n_valid": 40,
+    "diff_correlation": 0.417,
+    "frac_same_answer": 0.1,
+    "interpretation": "PARTIALLY uses scale bar"
+  }
+}
