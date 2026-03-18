@@ -61,7 +61,7 @@ def load_model(checkpoint_dir=None, sft_base=None):
 
     print(f"Loading base model: {MODEL_ID}")
     model = AutoModelForImageTextToText.from_pretrained(
-        MODEL_ID, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True,
+        MODEL_ID, torch_dtype=torch.bfloat16, device_map={"": 0}, trust_remote_code=True,
     )
 
     # For SFT→RL: merge SFT adapter into base first

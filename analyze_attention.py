@@ -49,7 +49,7 @@ def load_model(checkpoint=None, sft_base=None):
     from transformers import AutoModelForImageTextToText, AutoProcessor
 
     model = AutoModelForImageTextToText.from_pretrained(
-        MODEL_ID, torch_dtype=torch.bfloat16, device_map="auto",
+        MODEL_ID, torch_dtype=torch.bfloat16, device_map={"": 0},
         trust_remote_code=True, attn_implementation="eager",  # Need eager for attention weights
     )
 

@@ -137,7 +137,7 @@ def train(resume=False):
 
     print(f"Loading {MODEL_ID}...")
     model = AutoModelForImageTextToText.from_pretrained(
-        MODEL_ID, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True,
+        MODEL_ID, torch_dtype=torch.bfloat16, device_map={"": 0}, trust_remote_code=True,
     )
     processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
 
