@@ -1,0 +1,19 @@
+{
+  "models": {
+    "baseline": {
+      "mean_entropy": 0.7027371525764465,
+      "mean_max_attention": 0.007654762268066407,
+      "n_images": 20
+    },
+    "grpo_answer": {
+      "mean_entropy": 0.6517901748418808,
+      "mean_max_attention": 0.0063970088958740234,
+      "n_images": 20
+    },
+    "sft_then_rl": {
+      "mean_entropy": 1.0915022939443588,
+      "mean_max_attention": 0.008408355712890624,
+      "n_images": 20
+    }
+  }
+}
